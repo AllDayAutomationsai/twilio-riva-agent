@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+pids/
+*.pid
+service_status.json
+ngrok.yml
+*.backup
+*.bak
+
+# Audio files
+*.wav
+*.mp3
+*.flac
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Credentials (extra safety)
+*credentials*
+*secret*
+*token*
+
+# Setup scripts with potential secrets
+ngrok_pro_setup.sh
+setup_ngrok_auth.sh
+setup_cloudflare.sh

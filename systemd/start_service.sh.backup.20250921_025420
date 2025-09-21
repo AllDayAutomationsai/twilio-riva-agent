@@ -1,0 +1,118 @@
+#!/bin/bash
+#
+# Start script for Twilio RIVA Voice Agent Service
+#
+
+set -e
+
+# Configuration
+BASE_DIR="/home/ubuntu/twilio_riva_agent"
+VENV_DIR="$BASE_DIR/venv"
+LOG_DIR="$BASE_DIR/logs"
+PID_DIR="$BASE_DIR/pids"
+
+# Create necessary directories
+mkdir -p "$LOG_DIR"
+mkdir -p "$PID_DIR"
+
+# Source environment
+source "$BASE_DIR/.env"
+source "$VENV_DIR/bin/activate"
+
+# Function to start a component
+start_component() {
+    local name=$1
+    local command=$2
+    local pid_file="$PID_DIR/${name}.pid"
+    local log_file="$LOG_DIR/${name}.log"
+    
+    echo "Starting $name..."
+    
+    # Start the process
+    nohup $command >> "$log_file" 2>&1 &
+    local pid=$!
+    
+    # Save PID
+    echo $pid > "$pid_file"
+    
+    # Check if process started successfully
+    sleep 2
+    if kill -0 $pid 2>/dev/null; then
+        echo "$name started successfully (PID: $pid)"
+        return 0
+    else
+        echo "Failed to start $name"
+        return 1
+    fi
+}
+
+# Start ngrok tunnels (if configured)
+if [ -n "$NGROK_AUTHTOKEN" ]; then
+    echo "Starting ngrok tunnels..."
+    start_component "ngrok_ws" "ngrok http 8080 --authtoken $NGROK_AUTHTOKEN --log stdout"
+    start_component "ngrok_twiml" "ngrok http 5000 --authtoken $NGROK_AUTHTOKEN --log stdout"
+    start_component "ngrok_monitor" "ngrok http 9090 --authtoken $NGROK_AUTHTOKEN --log stdout"
+    sleep 5
+fi
+
+# Start monitoring server
+start_component "monitoring" "python3 $BASE_DIR/monitoring_server.py"
+
+# Start TwiML server
+start_component "twiml" "python3 $BASE_DIR/twiml_server.py"
+
+# Start WebSocket server (main application)
+start_component "websocket" "python3 $BASE_DIR/main.py"
+
+# Start dashboard (optional - don't fail if it doesn't start)
+if [ -f "$BASE_DIR/dashboard.py" ]; then
+    if start_component "dashboard" "python3 $BASE_DIR/dashboard.py"; then
+        echo "Dashboard started successfully"
+    else
+        echo "Dashboard failed to start (non-critical)"
+    fi
+fi
+
+# Wait a moment for all services to initialize
+sleep 5
+
+# Check critical services are running
+all_critical_running=true
+for service in websocket twiml monitoring; do
+    pid_file="$PID_DIR/${service}.pid"
+    if [ -f "$pid_file" ]; then
+        pid=$(cat "$pid_file")
+        if ! kill -0 $pid 2>/dev/null; then
+            echo "Critical service $service is not running"
+            all_critical_running=false
+        fi
+    else
+        echo "PID file for critical service $service not found"
+        all_critical_running=false
+    fi
+done
+
+if [ "$all_critical_running" = true ]; then
+    echo "All critical services started successfully"
+    
+    # Write status file
+    cat > "$BASE_DIR/service_status.json" << STATUS
+{
+    "status": "running",
+    "started_at": "$(date -Iseconds)",
+    "services": {
+        "websocket": $(cat "$PID_DIR/websocket.pid" 2>/dev/null || echo "null"),
+        "twiml": $(cat "$PID_DIR/twiml.pid" 2>/dev/null || echo "null"),
+        "monitoring": $(cat "$PID_DIR/monitoring.pid" 2>/dev/null || echo "null"),
+        "dashboard": $(cat "$PID_DIR/dashboard.pid" 2>/dev/null || echo "null")
+    }
+}
+STATUS
+    
+    exit 0
+else
+    echo "Some critical services failed to start"
+    # Clean up any started services
+    "$BASE_DIR/systemd/stop_service.sh"
+    exit 1
+fi

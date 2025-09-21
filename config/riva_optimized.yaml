@@ -1,0 +1,181 @@
+# Optimized RIVA Configuration for Production
+# Tuned for low latency and high throughput
+
+riva_server:
+  host: "localhost"
+  port: 50051
+  use_ssl: false
+  
+  # Connection pool settings
+  connection_pool:
+    max_size: 10
+    min_size: 2
+    keepalive_time_ms: 30000
+    keepalive_timeout_ms: 20000
+    
+asr:
+  # Model configuration
+  model_name: "conformer-en-US-asr-streaming"
+  language_code: "en-US"
+  sample_rate: 8000  # Twilio uses 8kHz
+  
+  # Streaming configuration
+  streaming:
+    # Smaller chunk size for lower latency
+    chunk_duration_ms: 100  # Send audio every 100ms
+    max_alternatives: 1
+    enable_automatic_punctuation: true
+    enable_word_time_offsets: false
+    enable_word_confidence: false
+    
+  # Voice Activity Detection (VAD)
+  vad:
+    enable: true
+    start_threshold: 0.5
+    end_threshold: 0.8
+    silence_duration_ms: 800  # End of speech after 800ms silence
+    
+  # Performance tuning
+  performance:
+    batch_size: 1  # Process one stream at a time for lowest latency
+    max_concurrent_streams: 50
+    buffer_size_ms: 200  # Small buffer for low latency
+    
+  # Interim results for real-time feedback
+  interim_results:
+    enable: true
+    stability_threshold: 0.8
+    
+tts:
+  # Model configuration
+  model_name: "fastpitch-hifigan-en-US"
+  voice_name: "English-US-Female-1"
+  language_code: "en-US"
+  sample_rate: 22050  # High quality audio
+  
+  # Audio encoding
+  encoding: "LINEAR_PCM"
+  audio_chunk_size: 1024  # Smaller chunks for streaming
+  
+  # Performance tuning
+  performance:
+    # Streaming settings for low latency
+    enable_streaming: true
+    chunk_duration_ms: 50  # Stream audio every 50ms
+    prefetch_chunks: 2  # Prefetch 2 chunks for smooth playback
+    
+    # Caching for common responses
+    cache_size: 100
+    cache_ttl_seconds: 3600
+    
+  # Voice parameters
+  voice_params:
+    pitch: 0.0  # Normal pitch
+    rate: 1.0   # Normal speed
+    volume: 1.0 # Normal volume
+    
+  # Quality vs Speed trade-off
+  quality_level: "balanced"  # Options: fast, balanced, high_quality
+  
+# Buffer management
+buffers:
+  audio_input:
+    size_ms: 500  # 500ms rolling buffer
+    overflow_strategy: "drop_oldest"
+    
+  audio_output:
+    size_ms: 1000  # 1 second buffer for smooth playback
+    underflow_strategy: "insert_silence"
+    
+  text_queue:
+    max_size: 10
+    overflow_strategy: "drop_oldest"
+    
+# Network optimization
+network:
+  # gRPC settings
+  grpc:
+    max_receive_message_length: 10485760  # 10MB
+    max_send_message_length: 10485760     # 10MB
+    keepalive_time_ms: 30000
+    keepalive_timeout_ms: 20000
+    keepalive_permit_without_calls: true
+    http2_max_pings_without_data: 0
+    
+  # Retry policy
+  retry:
+    max_attempts: 3
+    initial_backoff_ms: 100
+    max_backoff_ms: 1000
+    backoff_multiplier: 2
+    
+  # Timeout settings
+  timeouts:
+    connection_timeout_ms: 5000
+    request_timeout_ms: 30000
+    stream_timeout_ms: 300000  # 5 minutes for long calls
+    
+# Resource limits
+resources:
+  max_concurrent_calls: 100
+  max_memory_mb: 2048
+  cpu_cores: 4
+  
+# Monitoring and logging
+monitoring:
+  metrics_enabled: true
+  metrics_interval_seconds: 10
+  
+  # Performance tracking
+  track_latency: true
+  track_throughput: true
+  track_errors: true
+  
+  # Alerting thresholds
+  alerts:
+    high_latency_ms: 500
+    error_rate_threshold: 0.05
+    memory_usage_threshold: 0.9
+    
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  format: "json"
+  
+  # Log sampling for high volume
+  sampling:
+    enabled: true
+    rate: 0.1  # Log 10% of successful requests
+    
+  # Separate logs for different components
+  components:
+    asr: "INFO"
+    tts: "INFO"
+    grpc: "WARNING"
+    
+# Optimization presets
+presets:
+  low_latency:
+    asr:
+      chunk_duration_ms: 50
+      buffer_size_ms: 100
+      interim_results: true
+    tts:
+      chunk_duration_ms: 25
+      quality_level: "fast"
+      
+  high_quality:
+    asr:
+      chunk_duration_ms: 200
+      max_alternatives: 3
+      enable_word_confidence: true
+    tts:
+      quality_level: "high_quality"
+      sample_rate: 44100
+      
+  balanced:
+    asr:
+      chunk_duration_ms: 100
+      buffer_size_ms: 200
+    tts:
+      chunk_duration_ms: 50
+      quality_level: "balanced"

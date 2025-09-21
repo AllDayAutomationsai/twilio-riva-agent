@@ -1,0 +1,27 @@
+# Twilio
+twilio>=8.0.0
+
+# WebSocket and async
+websockets>=11.0
+aiohttp>=3.8.0
+asyncio
+
+# RIVA client
+nvidia-riva-client>=2.0.0
+
+# Audio processing
+numpy>=1.24.0
+scipy>=1.10.0
+soundfile>=0.12.0
+
+# Environment and utilities
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+
+# Logging
+coloredlogs>=15.0.0
+
+# AI/LLM (choose one or more)
+openai>=1.0.0  # If using OpenAI
+# anthropic>=0.3.0  # If using Claude
+# transformers>=4.30.0  # If using local models

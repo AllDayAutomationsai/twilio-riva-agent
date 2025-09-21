@@ -1,0 +1,222 @@
+#!/bin/bash
+set -e
+
+# Configuration
+BASE_DIR="/home/ubuntu/twilio_riva_agent"
+VENV_DIR="$BASE_DIR/venv"
+LOG_DIR="$BASE_DIR/logs"
+PID_DIR="$BASE_DIR/pids"
+
+# Create directories
+mkdir -p "$LOG_DIR"
+mkdir -p "$PID_DIR"
+
+# Load environment
+source "$BASE_DIR/.env"
+source "$VENV_DIR/bin/activate"
+# Derive reserved WS domain from WEBSOCKET_URL if present
+if [ -n "${WEBSOCKET_URL:-}" ]; then
+  WS_DOMAIN="${WEBSOCKET_URL#wss://}"
+  WS_DOMAIN="${WS_DOMAIN%%/*}"
+  NGROK_WS_EXTRA="--domain $WS_DOMAIN"
+else
+  NGROK_WS_EXTRA=""
+fi
+
+# Cleanup function
+cleanup() {
+    echo "Cleaning up processes..."
+    for pid_file in "$PID_DIR"/*.pid; do
+        if [ -f "$pid_file" ]; then
+            pid=$(cat "$pid_file")
+            if kill -0 "$pid" 2>/dev/null; then
+                kill "$pid" 2>/dev/null || true
+            fi
+            rm -f "$pid_file"
+        fi
+    done
+}
+
+# Trap for cleanup
+trap cleanup EXIT INT TERM
+
+# Function to start a component with retry logic
+start_component() {
+    local name=$1
+    local command=$2
+    local max_retries=${3:-3}
+    local retry_delay=${4:-2}
+    local pid_file="$PID_DIR/${name}.pid"
+    local log_file="$LOG_DIR/${name}.log"
+    
+    # Clean up old PID file if exists
+    if [ -f "$pid_file" ]; then
+        old_pid=$(cat "$pid_file")
+        if ! kill -0 "$old_pid" 2>/dev/null; then
+            rm -f "$pid_file"
+        else
+            echo "Warning: $name appears to be already running (PID: $old_pid)"
+            return 0
+        fi
+    fi
+    
+    local retry_count=0
+    while [ $retry_count -lt $max_retries ]; do
+        echo "Starting $name (attempt $((retry_count + 1))/$max_retries)..."
+        
+        # Start the process
+        nohup $command >> "$log_file" 2>&1 &
+        local pid=$!
+        
+        # Save PID
+        echo $pid > "$pid_file"
+        
+        # Wait and check if process is still running
+        sleep $retry_delay
+        
+        if kill -0 $pid 2>/dev/null; then
+            echo "$name started successfully (PID: $pid)"
+            return 0
+        else
+            echo "Failed to start $name (attempt $((retry_count + 1)))"
+            rm -f "$pid_file"
+            retry_count=$((retry_count + 1))
+            if [ $retry_count -lt $max_retries ]; then
+                sleep $retry_delay
+            fi
+        fi
+    done
+    
+    echo "Failed to start $name after $max_retries attempts"
+    return 1
+}
+
+# Kill any existing processes that might conflict
+echo "Cleaning up any existing processes..."
+pkill -f "ngrok" 2>/dev/null || true
+pkill -f "python.*monitoring_server" 2>/dev/null || true
+pkill -f "python.*twiml_server" 2>/dev/null || true
+pkill -f "python.*main.py" 2>/dev/null || true
+sleep 2
+
+# Start ngrok tunnels (if configured)
+if [ -n "$NGROK_AUTHTOKEN" ]; then
+    echo "Starting ngrok tunnels..."
+    echo "Using WS domain from WEBSOCKET_URL: ${WS_DOMAIN:-<none>}"
+    echo "ngrok ws flags: ${NGROK_WS_EXTRA:-<none>}"
+    start_component "ngrok_ws" "ngrok http 8080 $NGROK_WS_EXTRA --authtoken $NGROK_AUTHTOKEN --log stdout" 3 3
+    sleep 3  # Give ngrok time to establish tunnel
+    
+    start_component "ngrok_twiml" "ngrok http 5000 --authtoken $NGROK_AUTHTOKEN --log stdout" 3 3
+    sleep 3  # Give ngrok time to establish tunnel
+    
+    start_component "ngrok_monitor" "ngrok http 9090 --authtoken $NGROK_AUTHTOKEN --log stdout" 3 3
+    sleep 3  # Give ngrok time to establish tunnel
+fi
+
+# Start monitoring server with increased delay
+echo "Starting monitoring server..."
+if start_component "monitoring" "python $BASE_DIR/monitoring_server.py" 3 5; then
+    sleep 3  # Give monitoring server time to fully initialize
+else
+    echo "WARNING: Monitoring server failed to start, continuing anyway..."
+fi
+
+# Start TwiML server with port check
+echo "Checking if port 5000 is available..."
+if lsof -i :5000 >/dev/null 2>&1; then
+    echo "Port 5000 is in use, killing existing process..."
+    fuser -k 5000/tcp 2>/dev/null || true
+    sleep 2
+fi
+
+echo "Starting TwiML server..."
+if ! start_component "twiml" "python $BASE_DIR/twiml_server.py" 3 5; then
+    echo "ERROR: TwiML server failed to start"
+    cleanup
+    exit 1
+fi
+sleep 2
+
+# Start WebSocket server (main application)
+echo "Starting WebSocket server (main application)..."
+if ! start_component "websocket" "python $BASE_DIR/main.py" 3 5; then
+    echo "ERROR: WebSocket server failed to start"
+    cleanup
+    exit 1
+fi
+sleep 2
+
+# Start dashboard (optional - don't fail if it doesn't start)
+if [ -f "$BASE_DIR/dashboard.py" ]; then
+    echo "Starting dashboard (optional)..."
+    if start_component "dashboard" "python $BASE_DIR/dashboard.py" 2 3; then
+        echo "Dashboard started successfully"
+    else
+        echo "Dashboard failed to start (non-critical, continuing...)"
+    fi
+fi
+
+# Verify critical services are running
+echo "Verifying critical services..."
+critical_services=("websocket" "twiml")
+all_critical_running=true
+
+for service in "${critical_services[@]}"; do
+    pid_file="$PID_DIR/${service}.pid"
+    if [ -f "$pid_file" ]; then
+        pid=$(cat "$pid_file")
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "✓ $service is running (PID: $pid)"
+        else
+            echo "✗ $service is not running"
+            all_critical_running=false
+        fi
+    else
+        echo "✗ $service PID file not found"
+        all_critical_running=false
+    fi
+done
+
+if [ "$all_critical_running" = true ]; then
+    echo "All critical services started successfully"
+    
+    # Write status file
+    cat > "$BASE_DIR/service_status.json" << STATUS
+{
+    "status": "running",
+    "started_at": "$(date -Iseconds)",
+    "services": {
+        "websocket": $(cat "$PID_DIR/websocket.pid" 2>/dev/null || echo "null"),
+        "twiml": $(cat "$PID_DIR/twiml.pid" 2>/dev/null || echo "null"),
+        "monitoring": $(cat "$PID_DIR/monitoring.pid" 2>/dev/null || echo "null"),
+        "dashboard": $(cat "$PID_DIR/dashboard.pid" 2>/dev/null || echo "null"),
+        "ngrok_ws": $(cat "$PID_DIR/ngrok_ws.pid" 2>/dev/null || echo "null"),
+        "ngrok_twiml": $(cat "$PID_DIR/ngrok_twiml.pid" 2>/dev/null || echo "null"),
+        "ngrok_monitor": $(cat "$PID_DIR/ngrok_monitor.pid" 2>/dev/null || echo "null")
+    }
+}
+STATUS
+    
+    # Don't exit - let systemd manage the process
+    echo "Service startup complete. Keeping script running..."
+    
+    # Monitor critical services
+    while true; do
+        sleep 30
+        for service in "${critical_services[@]}"; do
+            pid_file="$PID_DIR/${service}.pid"
+            if [ -f "$pid_file" ]; then
+                pid=$(cat "$pid_file")
+                if ! kill -0 "$pid" 2>/dev/null; then
+                    echo "Critical service $service (PID: $pid) has died, exiting..."
+                    exit 1
+                fi
+            fi
+        done
+    done
+else
+    echo "Some critical services failed to start"
+    cleanup
+    exit 1
+fi

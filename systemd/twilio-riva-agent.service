@@ -1,0 +1,55 @@
+[Unit]
+Description=Twilio RIVA Voice Agent Service
+Documentation=https://github.com/yourusername/twilio-riva-agent
+After=network.target docker.service
+Requires=network.target
+Wants=docker.service
+
+[Service]
+Type=forking
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/twilio_riva_agent
+
+# Environment variables
+EnvironmentFile=/home/ubuntu/twilio_riva_agent/.env
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONPATH=/home/ubuntu/twilio_riva_agent"
+Environment="PYTHONUNBUFFERED=1"
+
+# Pre-start checks
+ExecStartPre=/bin/bash -c 'test -f /home/ubuntu/twilio_riva_agent/.env'
+
+# Start command
+ExecStart=/home/ubuntu/twilio_riva_agent/systemd/start_service.sh
+
+# Stop command
+ExecStop=/home/ubuntu/twilio_riva_agent/systemd/stop_service.sh
+
+# Restart policy
+Restart=always
+RestartSec=10
+StartLimitInterval=600
+StartLimitBurst=5
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+MemoryLimit=4G
+CPUQuota=400%
+
+# Logging
+StandardOutput=append:/home/ubuntu/twilio_riva_agent/logs/service.log
+StandardError=append:/home/ubuntu/twilio_riva_agent/logs/service_error.log
+
+# Security
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+# Process management
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
