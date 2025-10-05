@@ -57,7 +57,7 @@ class VoiceAgent:
         
         logger.info("Voice Agent initialized")
     
-    async def handle_connection(self, websocket, path):
+    async def handle_connection(self, websocket, path=None):
         """Handle new WebSocket connection from Twilio"""
         connection_id = id(websocket)
         logger.info(f"New WebSocket connection: {connection_id}")
@@ -70,21 +70,38 @@ class VoiceAgent:
         
         try:
             async for message in websocket:
-                await self.process_message(websocket, message, connection_id)
+                logger.info(f"Received message type: {type(message)}, length: {len(message) if isinstance(message, (str, bytes)) else "unknown"}")
+                try:
+                    await self.process_message(websocket, message, connection_id)
+                except Exception as e:
+                    logger.error(f"Error processing message: {e}", exc_info=True)
         except websockets.exceptions.ConnectionClosed:
             logger.info(f"Connection closed: {connection_id}")
         finally:
             await self.cleanup_connection(connection_id)
     
     async def process_message(self, websocket, message: str, connection_id: int):
+        logger.info(f"Processing message for connection {connection_id}")
         """Process incoming message from Twilio"""
         try:
             data = json.loads(message)
             event = data.get('event')
+            logger.info(f"Event received: {event}")
             
             if event == 'start':
                 await self.handle_start(data, connection_id, websocket)
             elif event == 'media':
+                # Auto-initialize if no start event was received
+                if connection_id not in self.audio_processors:
+                    logger.info(f"Auto-initializing for connection {connection_id}")
+                    self.audio_processors[connection_id] = AudioProcessor(self.asr_client)
+                    self.output_managers[connection_id] = AudioOutputManager(self.tts_client)
+                    self.audio_chunkers[connection_id] = AudioChunker()
+                    self.response_buffers[connection_id] = ResponseBuffer()
+                    self.caller_numbers[connection_id] = "Unknown"
+                    self.stream_sids[connection_id] = "auto"
+                    self.call_sids[connection_id] = "auto"
+                    asyncio.create_task(self.start_asr_processing(connection_id))
                 await self.handle_media(data, connection_id, websocket)
             elif event == 'stop':
                 await self.handle_stop(data, connection_id)
@@ -125,6 +142,7 @@ class VoiceAgent:
         asyncio.create_task(self.send_greeting(connection_id))
     
     async def handle_media(self, data: dict, connection_id: int, websocket):
+        logger.info(f"handle_media called for connection {connection_id}")
         """Handle incoming audio media"""
         media = data.get('media', {})
         payload = media.get('payload')
@@ -147,6 +165,7 @@ class VoiceAgent:
                     self.is_speaking[connection_id] = False
             
             # Add to ASR processor
+            logger.debug(f"Feeding {len(pcm_audio)} bytes to ASR")
             await self.audio_processors[connection_id].add_audio(pcm_audio)
     
     async def handle_stop(self, data: dict, connection_id: int):
