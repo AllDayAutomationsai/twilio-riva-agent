@@ -57,3 +57,26 @@ temp/
 ngrok_pro_setup.sh
 setup_ngrok_auth.sh
 setup_cloudflare.sh
+
+# Test files
+test_*.py
+test_*.xml
+main_patched.py
+main_fixed.py
+
+# Log files
+logs/
+*.log
+
+# Process ID files
+pids/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
+
+# Ngrok
+ngrok.yml
